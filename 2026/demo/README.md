@@ -10,7 +10,9 @@ A Spring Boot application implementing an e-learning platform domain model with 
 - [Domain Model & Entities](#domain-model--entities)
 - [Class & Relationship Overview](#class--relationship-overview)
 - [Key Features & Business Logic](#key-features--business-logic)
-- [Configuration](#configuration)
+- [Service & REST API Layer](#service--rest-api-layer)
+- [Repositories](#repositories)
+- [Configuration & Logging](#configuration--logging-applicationproperties)
 - [Project Structure](#project-structure)
 - [Prerequisites](#prerequisites)
 - [Building & Testing](#building--testing)
@@ -20,11 +22,13 @@ A Spring Boot application implementing an e-learning platform domain model with 
 
 ## Overview
 
-This project models the core domain of an educational course management and enrollment system:
+This project implements an e-learning platform system with a layered Spring Boot architecture:
 - **Polymorphic User Management**: Role hierarchy (`AdminUser`, `InstructorUser`, `StudentUser`) inheriting from an abstract `User` base entity using Table-per-Class inheritance.
 - **Course Lifecycle**: Courses with lifecycle statuses (`CourseStatus`: `DRAFT`, `PENDING`, `PUBLISHED`), date windows (`startDate`, `endDate`), capacity controls (`studentMaxQuantity`, `quantity`), fee (`fee`), and skill associations (`Skill`).
 - **Course Creation & Approval Workflow**: Instructors create courses in `DRAFT` status and request administrative approval via `ApprovalRequest` (`ApprovalRequestStatus`: `SUBMITTED`, `APPROVED`, `REJECTED`), transitioning courses to `PENDING`.
 - **Course Enrollment & Bundled Discounts**: Students enroll in published, open courses (`Enrollment`). When a student enrolls in multiple courses with the same skill within the same calendar month, an externalized discount (configured via `student.discount` in `application.properties`) is automatically applied.
+- **Service & REST API Layer**: Clean separation of concerns with REST controllers (`InstructorResource`), DTOs (`CreateInstructorRequestDTO`), ModelMapper configuration (`ModelMapperConfig`), service abstractions (`InstructorService`), and custom exception handling (`EmailAlreadyExistsException`).
+- **Spring Data JPA Repositories**: Complete repository layer providing CRUD and specialized query capabilities for users, skills, courses, enrollments, and approval requests.
 
 ---
 
@@ -349,6 +353,87 @@ erDiagram
 
 ---
 
+## Service & REST API Layer
+
+### REST Controller: `InstructorResource`
+- **Base Endpoint**: `/instructors`
+- **`POST /instructors`**:
+  - Accepts a JSON payload mapped to `CreateInstructorRequestDTO` (`email`, `password`).
+  - Maps `CreateInstructorRequestDTO` to `InstructorUser` via `ModelMapper`.
+  - Calls `instructorService.create(instructor)`.
+  - **Success Response**: `201 CREATED` with an empty body.
+  - **Error Response**: `409 CONFLICT` with the exception message in the response body if `EmailAlreadyExistsException` or any other error occurs.
+
+#### cURL Examples
+
+**1. Create a New Instructor (`201 Created`)**
+```bash
+curl -i -X POST http://localhost:8080/instructors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "jane.doe@example.com",
+    "password": "Password123!"
+  }'
+```
+
+*Expected Response (`201 Created` with empty body):*
+```http
+HTTP/1.1 201 Created
+Date: Fri, 16 Oct 2026 16:50:00 GMT
+Content-Length: 0
+```
+
+**2. Duplicate Email Registration Attempt (`409 Conflict`)**
+```bash
+curl -i -X POST http://localhost:8080/instructors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "jane.doe@example.com",
+    "password": "Password123!"
+  }'
+```
+
+*Expected Response (`409 Conflict` with error message in body):*
+```http
+HTTP/1.1 409 Conflict
+Content-Type: text/plain;charset=UTF-8
+Content-Length: 43
+
+Email already exists: jane.doe@example.com
+```
+
+### Service Layer: `InstructorService` & `InstructorServiceImp`
+- **Interface**: `InstructorService`
+  - `void create(InstructorUser instructor) throws EmailAlreadyExistsException`
+- **Implementation**: `InstructorServiceImp`
+  - Validates that an instructor with the given email does not already exist via `InstructorUserRepository.existsByEmail(email)`.
+  - Throws `EmailAlreadyExistsException("Email already exists: " + email)` if duplicate.
+  - Persists the new `InstructorUser` entity using `instructorUserRepository.save(instructor)`.
+
+### Data Transfer Objects (DTO)
+- **`CreateInstructorRequestDTO`**:
+  - `email` (`String`)
+  - `password` (`String`)
+
+---
+
+## Repositories
+
+The project leverages Spring Data JPA repositories with specialized query methods:
+
+| Repository | Entity | Key Methods |
+|---|---|---|
+| `UserRepository` | `User` | `findByEmail(String)`, `existsByEmail(String)` |
+| `AdminUserRepository` | `AdminUser` | `findByEmail(String)`, `existsByEmail(String)` |
+| `InstructorUserRepository` | `InstructorUser` | `findByEmail(String)`, `existsByEmail(String)`, `findBySkillsContaining(Skill)` |
+| `StudentUserRepository` | `StudentUser` | `findByEmail(String)`, `existsByEmail(String)` |
+| `SkillRepository` | `Skill` | `findByName(String)`, `existsByName(String)` |
+| `CourseRepository` | `Course` | `findByStatus(CourseStatus)`, `findBySkill(Skill)`, `findBySkillId(Long)`, `findByCreatedBy(InstructorUser)`, `findByCreatedByEmail(String)` |
+| `EnrollmentRepository` | `Enrollment` | `findByStudent(StudentUser)`, `findByStudentEmail(String)`, `findByCourse(Course)`, `findByCourseId(Long)` |
+| `ApprovalRequestRepository` | `ApprovalRequest` | `findByStatus(ApprovalRequestStatus)`, `findByCourse(Course)`, `findByCourseId(Long)` |
+
+---
+
 ## Configuration & Logging (`application.properties`)
 
 All logging and application configuration is managed directly in `demo/src/main/resources/application.properties`:
@@ -377,6 +462,7 @@ logging.logback.rollingpolicy.total-size-cap=1GB
 
 - **No XML File Needed**: Spring Boot includes full native support for Logback configuration directly through properties, including log levels, formatting patterns, console coloring, file destinations, and rolling/retention policies.
 - **HTTP Request Logging**: `CommonsRequestLoggingFilter` configured in `LoggingConfig` logs incoming web requests (client info, query strings, payloads).
+- **ModelMapper Bean Configuration**: `ModelMapperConfig` defines the `ModelMapper` bean used across the application to map between request DTOs and persistent domain entities.
 
 ---
 
@@ -392,7 +478,10 @@ demo/
     │   ├── java/com/example/demo/
     │   │   ├── DemoApplication.java
     │   │   ├── config/
-    │   │   │   └── LoggingConfig.java
+    │   │   │   ├── LoggingConfig.java
+    │   │   │   └── ModelMapperConfig.java
+    │   │   ├── dto/
+    │   │   │   └── CreateInstructorRequestDTO.java
     │   │   ├── entity/
     │   │   │   ├── AdminUser.java
     │   │   │   ├── ApprovalRequest.java
@@ -404,12 +493,27 @@ demo/
     │   │   │   ├── Skill.java
     │   │   │   ├── StudentUser.java
     │   │   │   └── User.java
-    │   │   └── exception/
-    │   │       ├── ClosedCourseException.java
-    │   │       ├── FullCourseException.java
-    │   │       ├── NoDraftCourseException.java
-    │   │       ├── NoOwnerCourseException.java
-    │   │       └── NoPublishStatusException.java
+    │   │   ├── exception/
+    │   │   │   ├── ClosedCourseException.java
+    │   │   │   ├── EmailAlreadyExistsException.java
+    │   │   │   ├── FullCourseException.java
+    │   │   │   ├── NoDraftCourseException.java
+    │   │   │   ├── NoOwnerCourseException.java
+    │   │   │   └── NoPublishStatusException.java
+    │   │   ├── repository/
+    │   │   │   ├── AdminUserRepository.java
+    │   │   │   ├── ApprovalRequestRepository.java
+    │   │   │   ├── CourseRepository.java
+    │   │   │   ├── EnrollmentRepository.java
+    │   │   │   ├── InstructorUserRepository.java
+    │   │   │   ├── SkillRepository.java
+    │   │   │   ├── StudentUserRepository.java
+    │   │   │   └── UserRepository.java
+    │   │   ├── resource/
+    │   │   │   └── InstructorResource.java
+    │   │   └── service/
+    │   │       ├── InstructorService.java
+    │   │       └── InstructorServiceImp.java
     │   └── resources/
     │       ├── application.properties
     │       └── static/
@@ -418,13 +522,20 @@ demo/
         └── java/com/example/demo/
             ├── DemoApplicationTests.java
             ├── config/
-            │   └── LoggingConfigTest.java
-            └── entity/
-                ├── AdminUserTest.java
-                ├── CourseTest.java
-                ├── InstructorUserTest.java
-                ├── SkillEntityTest.java
-                └── StudentUserTest.java
+            │   ├── LoggingConfigTest.java
+            │   └── ModelMapperConfigTest.java
+            ├── entity/
+            │   ├── AdminUserTest.java
+            │   ├── CourseTest.java
+            │   ├── InstructorUserTest.java
+            │   ├── SkillEntityTest.java
+            │   └── StudentUserTest.java
+            ├── repository/
+            │   └── RepositoryIntegrationTest.java
+            ├── resource/
+            │   └── InstructorResourceTest.java
+            └── service/
+                └── InstructorServiceImpTest.java
 ```
 
 ---
@@ -450,12 +561,17 @@ cd demo
 ./mvnw clean package
 ```
 
-### Test Coverage Highlights
+### Test Coverage Highlights (78 Total Tests)
 - **`StudentUserTest` (21 tests)**: Tests course application flow, capacity check exceptions (`FullCourseException`), publication status checks (`NoPublishStatusException`), availability date checks (`ClosedCourseException`), same-month/same-skill discount calculation (including `RoundingMode.HALF_UP`), discount externalization via `application.properties`, unmodifiable collection enforcement, and JPA persistence.
 - **`InstructorUserTest` (19 tests)**: Tests `Skill` relationships and helper methods (`addSkill`, `removeSkill`, `hasASkill`, `hasSkills`), Course creation (`createCourse`), Course cascade persistence and deletion, and polymorphic user retrieval.
 - **`CourseTest` (10 tests)**: Tests Course instantiation, Lombok builder, lifecycle statuses (`CourseStatus`), `@ManyToOne` association with `Skill`, `quantity` increment logic, `LocalDate` start/end date handling, `BigDecimal` fee persistence, and updates.
 - **`AdminUserTest` (7 tests)**: Tests inheritance, entity persistence, updates, deletion, discriminator values, and polymorphic querying via `User.class`.
+- **`RepositoryIntegrationTest` (6 tests)**: Integration tests verifying persistence, queries, and constraints across all 8 Spring Data JPA repositories (`UserRepository`, `AdminUserRepository`, `InstructorUserRepository`, `StudentUserRepository`, `SkillRepository`, `CourseRepository`, `EnrollmentRepository`, and `ApprovalRequestRepository`).
+- **`InstructorResourceTest` (5 tests)**: WebMvc slice tests with `MockMvc` verifying the `POST /instructors` REST endpoint: JSON body deserialization, HTTP 201 Created status, HTTP 409 Conflict handling for duplicate emails (`EmailAlreadyExistsException`), error responses on mapper failures, and null message handling.
 - **`SkillEntityTest` (3 tests)**: Tests persistence, updates, and deletion for `Skill`.
+- **`ModelMapperConfigTest` (2 tests)**: Tests ModelMapper bean creation and mapping from `CreateInstructorRequestDTO` to `InstructorUser`.
+- **`InstructorServiceImpTest` (2 tests)**: Mockito unit tests verifying successful instructor creation when email is unique and throwing `EmailAlreadyExistsException` when email already exists.
+- **`LoggingConfigTest` (2 tests)**: Verifies `CommonsRequestLoggingFilter` bean initialization and startup event logging.
 - **`DemoApplicationTests` (1 test)**: Context loads verification.
 
 ---
@@ -472,3 +588,9 @@ cd demo
 Once started:
 - Web Page: [http://localhost:8080/index.html](http://localhost:8080/index.html)
 - Embedded H2 in-memory database runs automatically during execution.
+- Create an instructor via cURL:
+  ```bash
+  curl -i -X POST http://localhost:8080/instructors \
+    -H "Content-Type: application/json" \
+    -d '{"email": "instructor@example.com", "password": "password123"}'
+  ```
